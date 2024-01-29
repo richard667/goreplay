@@ -307,6 +307,7 @@ func (c *HTTPClient) Send(data []byte) ([]byte, error) {
 	var resp *http.Response
 	var err error
 
+	// http.ReadRequest函数会将一个请求转换为req，golang自带函数，只支持http/1.x，http/2需要使用golang.org/x/net/http2
 	req, err = http.ReadRequest(bufio.NewReader(bytes.NewReader(data)))
 	if err != nil {
 		return nil, err

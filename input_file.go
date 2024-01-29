@@ -74,6 +74,8 @@ func (f *fileInputReader) parse(init chan struct{}) error {
 
 	lineNum := 0
 
+	// 将请求payload全部读入buffer直到一个请求全部读入，然后开始处理。
+	// 处理就是将请求timestamp、请求数据push到f.queue中。
 	for {
 		line, err := f.reader.ReadBytes('\n')
 		lineNum++
@@ -134,6 +136,38 @@ func (f *fileInputReader) parse(init chan struct{}) error {
 
 		buffer.Write(line)
 	}
+	// 原始格式如下，第一行为payloadType, uuid, timing, latency， 其中payloadType，1表示request、2表示response、3表示requestresponse
+	//1 c8fd1f407f00000167d887bf 1684399939923933000 0
+	//POST / HTTP/1.1
+	//Host: localhost:8000
+	//User-Agent: curl/7.79.1
+	//Accept: */*
+	//Content-Length: 11
+	//Content-Type: application/x-www-form-urlencoded
+	//
+	//{"aa":"bb"}
+	//🐵🙈🙉
+	//1 c8fe1f407f000001aa72aec5 1684399943955092000 0
+	//POST / HTTP/1.1
+	//Host: localhost:8000
+	//User-Agent: curl/7.79.1
+	//Accept: */*
+	//Content-Length: 14
+	//Content-Type: application/x-www-form-urlencoded
+	//
+	//{"aa":"beeeb"}
+	//🐵🙈🙉
+
+	// 记录的数据如下，第一行为meta，第二行开始为实际数据
+	//1 c8fe1f407f000001aa72aec5 1684399943955092000 0
+	//POST / HTTP/1.1
+	//Host: localhost:8000
+	//User-Agent: curl/7.79.1
+	//Accept: */*
+	//Content-Length: 11
+	//Content-Type: application/x-www-form-urlencoded
+	//
+	//{"aa":"bb"}
 }
 
 func (f *fileInputReader) wait() {
@@ -213,7 +247,7 @@ type FileInput struct {
 	dryRun      bool
 	maxWait     time.Duration
 
-	stats *expvar.Map
+	stats *expvar.Map // 文件被多少reader读
 }
 
 // NewFileInput constructor for FileInput. Accepts file path as argument.
@@ -291,8 +325,8 @@ func (i *FileInput) PluginRead() (*Message, error) {
 	select {
 	case <-i.exit:
 		return nil, ErrorStopped
-	case buf := <-i.data:
-		i.stats.Add("read_from", 1)
+	case buf := <-i.data: // emit()函数会发出信号
+		i.stats.Add("read_from", 1) // 该file的计数+1
 		msg.Meta, msg.Data = payloadMetaWithBody(buf)
 		return &msg, nil
 	}
@@ -324,6 +358,7 @@ func (i *FileInput) nextReader() (next *fileInputReader) {
 	return
 }
 
+// 触发读取文件
 func (i *FileInput) emit() {
 	var lastTime int64 = -1
 

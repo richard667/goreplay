@@ -6,6 +6,17 @@ import (
 )
 
 // Message represents data across plugins
+// 格式：
+// 1 c8fd1f407f00000167d887bf 1684399939923933000 0 // 第一行是Meta，后续的是Data
+// POST / HTTP/1.1
+// Host: localhost:8000
+// User-Agent: curl/7.79.1
+// Accept: */*
+// Content-Length: 11
+// Content-Type: application/x-www-form-urlencoded
+//
+// {"aa":"bb"}
+// 🐵🙈🙉
 type Message struct {
 	Meta []byte // metadata
 	Data []byte // actual data

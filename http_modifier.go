@@ -32,6 +32,7 @@ func NewHTTPModifier(config *HTTPModifierConfig) *HTTPModifier {
 	return &HTTPModifier{config: config}
 }
 
+// 符合规则的进行重写，不符合规则的直接返回空。并根据过滤条件过滤掉不符合规则的请求。
 func (m *HTTPModifier) Rewrite(payload []byte) (response []byte) {
 	if !proto.HasRequestTitle(payload) {
 		return payload

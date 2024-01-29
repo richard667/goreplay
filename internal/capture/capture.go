@@ -52,9 +52,9 @@ type PcapOptions struct {
 	TimestampType   string          `json:"input-raw-timestamp-type"`
 	BPFFilter       string          `json:"input-raw-bpf-filter"`
 	BufferSize      size.Size       `json:"input-raw-buffer-size"`
-	Promiscuous     bool            `json:"input-raw-promisc"`
+	Promiscuous     bool            `json:"input-raw-promisc"` // 混杂模式
 	Monitor         bool            `json:"input-raw-monitor"`
-	Snaplen         bool            `json:"input-raw-override-snaplen"`
+	Snaplen         bool            `json:"input-raw-override-snaplen"` // 截取的数据长度
 	Engine          EngineType      `json:"input-raw-engine"`
 	VXLANPort       int             `json:"input-raw-vxlan-port"`
 	VXLANVNIs       []int           `json:"input-raw-vxlan-vni"`
@@ -67,7 +67,7 @@ type PcapOptions struct {
 	Stats           bool            `json:"input-raw-stats"`
 	AllowIncomplete bool            `json:"input-raw-allow-incomplete"`
 	IgnoreInterface []string        `json:"input-raw-ignore-interface"`
-	Transport       string
+	Transport       string          // proto，TCP/HTTP？
 }
 
 // Listener handle traffic capture, this is its representation.
@@ -202,6 +202,7 @@ func (l *Listener) Listen(ctx context.Context) (err error) {
 	}
 	l.Unlock()
 
+	// 动态更新Interface和Filter
 	go func() {
 		for {
 			time.Sleep(time.Second)
@@ -291,6 +292,8 @@ func (l *Listener) ListenBackground(ctx context.Context) chan error {
 //	[namespace/]daemonset/[daemonset_name]
 //	[namespace/]labelSelector/[selector]
 //	[namespace/]fieldSelector/[selector]
+//
+// ME：拿到Pod IP列表
 func k8sIPs(addr string) []string {
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -349,6 +352,7 @@ func k8sIPs(addr string) []string {
 
 // Filter returns automatic filter applied by goreplay
 // to a pcap handle of a specific interface
+// ME: 拼接成字符串，类似于tcpdump命令。 src host 192.168.1.2
 func (l *Listener) Filter(ifi pcap.Interface, hosts ...string) (filter string) {
 	// https://www.tcpdump.org/manpages/pcap-filter.7.html
 
@@ -370,7 +374,7 @@ func (l *Listener) Filter(ifi pcap.Interface, hosts ...string) (filter string) {
 	if len(hosts) != 0 && !l.config.Promiscuous {
 		filter = fmt.Sprintf("((%s) and (%s))", filter, hostsFilter("dst", hosts))
 	} else {
-		filter = fmt.Sprintf("(%s)", filter)
+		filter = fmt.Sprintf("(%s)", filter) // 混杂模式则不关心src/dst及hosts。
 	}
 
 	if l.config.TrackResponse {
@@ -400,6 +404,7 @@ func (l *Listener) Filter(ifi pcap.Interface, hosts ...string) (filter string) {
 
 // PcapHandle returns new pcap Handle from dev on success.
 // this function should be called after setting all necessary options for this listener
+// ME： 设置pcap的配置参数及BPFfilter，得到pcap handle
 func (l *Listener) PcapHandle(ifi pcap.Interface) (handle *pcap.Handle, err error) {
 	var inactive *pcap.InactiveHandle
 	inactive, err = pcap.NewInactiveHandle(ifi.Name)
@@ -428,19 +433,20 @@ func (l *Listener) PcapHandle(ifi pcap.Interface) (handle *pcap.Handle, err erro
 		}
 	}
 
+	// 设置截取的数据长度
 	var snap int
 
 	if !l.config.Snaplen {
 		infs, _ := net.Interfaces()
 		for _, i := range infs {
 			if i.Name == ifi.Name {
-				snap = i.MTU + 200
+				snap = i.MTU + 200 // 为什么是+200？其余部分长度为18，其实只要+18就可以？+200也不影响还是会多出来一部分数据？
 			}
 		}
 	}
 
 	if snap == 0 {
-		snap = 64<<10 + 200
+		snap = 64<<10 + 200 // 64k
 	}
 
 	err = inactive.SetSnapLen(snap)
@@ -521,12 +527,13 @@ func http1EndHint(m *tcp.Message) bool {
 	return proto.HasFullPayload(m, m.PacketData()...) && (req || res)
 }
 
+// 开始数据包抓取处理
 func (l *Listener) readHandle(key string, hndl packetHandle) {
 	runtime.LockOSThread()
 
 	defer l.closeHandles(key)
-	linkSize := 14
-	linkType := int(layers.LinkTypeEthernet)
+	linkSize := 14                           // 默认认为是lan。
+	linkType := int(layers.LinkTypeEthernet) // pcap抓到的可能是二层的ethernet/wifi，也可能是三层的ip，或是其他。
 	if _, ok := hndl.handler.(*pcap.Handle); ok {
 		linkType = int(hndl.handler.(*pcap.Handle).LinkType())
 		linkSize, ok = pcapLinkTypeLength(linkType, l.config.VLAN)
@@ -551,7 +558,7 @@ func (l *Listener) readHandle(key string, hndl packetHandle) {
 		select {
 		case <-l.quit:
 			return
-		case <-timer.C:
+		case <-timer.C: // 定时打点记录当前数据情况
 			if h, ok := hndl.handler.(PcapStatProvider); ok {
 				s, err := h.Stats()
 				if err == nil {
@@ -561,6 +568,7 @@ func (l *Listener) readHandle(key string, hndl packetHandle) {
 				}
 			}
 		default:
+			// 借助pcap进行二层抓包，然后进行处理
 			data, ci, err := hndl.handler.ReadPacketData()
 			if err == nil {
 				if l.config.TimestampType == "go" {
@@ -575,6 +583,7 @@ func (l *Listener) readHandle(key string, hndl packetHandle) {
 				})
 				continue
 			}
+			// 抓包失败处理
 			if enext, ok := err.(pcap.NextError); ok && enext == pcap.NextErrorTimeoutExpired {
 				continue
 			}
@@ -614,6 +623,7 @@ func (l *Listener) closeHandles(key string) {
 	}
 }
 
+// 对每个网络接口，配置对应的pcap handler
 func (l *Listener) activatePcap() error {
 	var e error
 	var msg string
@@ -679,6 +689,7 @@ func (l *Listener) activateRawSocket() error {
 	return nil
 }
 
+// 配置pcapfile的handler
 func (l *Listener) activatePcapFile() (err error) {
 	var handle *pcap.Handle
 	var e error
@@ -742,16 +753,18 @@ func (l *Listener) activateAFPacket() error {
 	return nil
 }
 
+// 设置listener监听的接口
 func (l *Listener) setInterfaces() (err error) {
 	var pifis []pcap.Interface
-	pifis, err = pcap.FindAllDevs()
-	ifis, _ := net.Interfaces()
+	pifis, err = pcap.FindAllDevs() // 返回当前机器所有物理网络设备？
+	ifis, _ := net.Interfaces()     // 返回系统所有网络设备，包括虚拟网络设备？
 	l.Interfaces = []pcap.Interface{}
 
 	if err != nil {
 		return
 	}
 
+	// 去掉不关心的物理设备
 	for _, pi := range pifis {
 		ignore := false
 		for _, ig := range l.config.IgnoreInterface {
@@ -765,12 +778,14 @@ func (l *Listener) setInterfaces() (err error) {
 			continue
 		}
 
+		// ME：如果是k8s内的pod，设备必然是veth开头的虚拟网卡，否则去掉。
 		if strings.HasPrefix(l.host, "k8s://") {
 			if !strings.HasPrefix(pi.Name, "veth") {
 				continue
 			}
 		}
 
+		// ME：
 		if isDevice(l.host, pi) {
 			l.Interfaces = []pcap.Interface{pi}
 			return
@@ -838,6 +853,7 @@ func isDevice(addr string, ifi pcap.Interface) bool {
 	return false
 }
 
+// 获取网络接口上的所有IP，[]string格式
 func interfaceAddresses(ifi pcap.Interface) []string {
 	var hosts []string
 	for _, addr := range ifi.Addresses {
@@ -846,6 +862,7 @@ func interfaceAddresses(ifi pcap.Interface) []string {
 	return hosts
 }
 
+// 获取网络接口上的所有IP，[]net.IP格式
 func interfaceIPs(ifi pcap.Interface) []net.IP {
 	var ips []net.IP
 	for _, addr := range ifi.Addresses {
@@ -862,6 +879,7 @@ func listenAll(addr string) bool {
 	return false
 }
 
+// ME：返回要监听的端口，参考tcpdump用法。根据传入的ports，拼接出filter。ports为空表示0-65535的portrange。
 func portsFilter(transport string, direction string, ports []uint16) string {
 	if len(ports) == 0 || ports[0] == 0 {
 		return fmt.Sprintf("%s %s portrange 0-%d", transport, direction, 1<<16-1)
@@ -874,6 +892,7 @@ func portsFilter(transport string, direction string, ports []uint16) string {
 	return strings.Join(filters, " or ")
 }
 
+// ME：返回要监听的host，参考tcpdump用法。
 func hostsFilter(direction string, hosts []string) string {
 	var hostsFilters []string
 	for _, host := range hosts {
@@ -883,13 +902,14 @@ func hostsFilter(direction string, hosts []string) string {
 	return strings.Join(hostsFilters, " or ")
 }
 
+// 不同类型的网络，二层包开头字节数不同，得到开头偏移量以得到有效数据。https://www.tcpdump.org/linktypes.html
 func pcapLinkTypeLength(lType int, vlan bool) (int, bool) {
 	switch layers.LinkType(lType) {
 	case layers.LinkTypeEthernet:
 		if vlan {
-			return 18, true
+			return 18, true // vlan比lan多了4字节的vlan tag。
 		} else {
-			return 14, true
+			return 14, true // lan开头14字节，6字节dst mac，6字节src mac， 2字节标识length/type。https://blog.csdn.net/wfhh000/article/details/42836401
 		}
 	case layers.LinkTypeNull, layers.LinkTypeLoop:
 		return 4, true

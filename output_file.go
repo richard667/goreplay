@@ -90,6 +90,7 @@ func NewFileOutput(pathTemplate string, config *FileOutputConfig) *FileOutput {
 		config.FlushInterval = 100 * time.Millisecond
 	}
 
+	// New完之后就可以开始写了，即使暂时没数据也没关系。
 	go func() {
 		for {
 			time.Sleep(config.FlushInterval)

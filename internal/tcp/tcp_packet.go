@@ -56,9 +56,10 @@ parser extracts information from pcap Packet. functions of *Packet doesn't valid
 calllers must make sure that ParsePacket has'nt returned any error before calling any other
 function.
 */
+// ME：一个解析后的IP数据包
 type Packet struct {
 	Direction          Dir
-	messageID          uint64
+	messageID          uint64 // ME：属于同一个TCP包的IP包有相同的ID
 	SrcIP, DstIP       net.IP
 	Version            uint8
 	SrcPort, DstPort   uint16
@@ -75,10 +76,11 @@ type Packet struct {
 	gc      bool
 }
 
+// ME：一个链路层数据包，包含一个IP包的数据。TCP报文到IP包会做截断，一个TCP报文会分成多个IP包传输，一个IP包封装在一个链路层包中传输。
 type PcapPacket struct {
 	Data     []byte
-	LType    int
-	LTypeLen int
+	LType    int // ME：标识属于什么包，如Ethernet，由capture.go的readHandle函数传入。
+	LTypeLen int // ME：不同类型的包，首部长度不一样，LAN长度为14
 	Ci       *gopacket.CaptureInfo
 }
 
@@ -92,6 +94,7 @@ func ParsePacket(data []byte, lType, lTypeLen int, ci *gopacket.CaptureInfo, all
 	return pckt, nil
 }
 
+// ME: 解析一个IP包，从包中获取相应的信息。https://blog.51cto.com/mmanong/1962353
 func (pckt *Packet) parse(data []byte, lType, lTypeLen int, cp *gopacket.CaptureInfo, allowEmpty bool) error {
 	pckt.Retry = 0
 	pckt.messageID = 0
@@ -117,7 +120,7 @@ func (pckt *Packet) parse(data []byte, lType, lTypeLen int, cp *gopacket.Capture
 			return ErrHdrLength("IPv4")
 		}
 		proto = ldata[9]
-		ihl := int(ldata[0]&0x0F) * 4
+		ihl := int(ldata[0]&0x0F) * 4 // ME：计算IP包头部一共多少字节Internet Header Length。最小20，最大60。
 		if ihl < 20 {
 			return ErrHdrInvalid("IPv4's IHL")
 		}
@@ -212,6 +215,7 @@ func (pckt *Packet) parse(data []byte, lType, lTypeLen int, cp *gopacket.Capture
 	return nil
 }
 
+// ME：根据IP:Port和ACK号，同一个TCP包会打上相同的ID。原因是一个TCP包会拆分到多个IP包中传输。
 func (pckt *Packet) MessageID() uint64 {
 	if pckt.messageID == 0 {
 		// All packets in the same message will share the same ID

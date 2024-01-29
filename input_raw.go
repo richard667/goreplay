@@ -27,8 +27,8 @@ type RAWInput struct {
 	closed         bool
 
 	quit  chan bool // Channel used only to indicate goroutine should shutdown
-	host  string
-	ports []uint16
+	host  string    // 监听的host
+	ports []uint16  // 监听的port
 }
 
 // NewRAWInput constructor for RAWInput. Accepts raw input config as arguments.
@@ -59,7 +59,7 @@ func NewRAWInput(address string, config RAWInputConfig) (i *RAWInput) {
 
 	var ports []uint16
 	if _ports != "" {
-		portsStr := strings.Split(_ports, ",")
+		portsStr := strings.Split(_ports, ",") // 理论上应该只有一个port？
 
 		for _, portStr := range portsStr {
 			port, err := strconv.Atoi(strings.TrimSpace(portStr))
@@ -130,7 +130,7 @@ func (i *RAWInput) listen(address string) {
 	var ctx context.Context
 	ctx, i.cancelListener = context.WithCancel(context.Background())
 	errCh := i.listener.ListenBackground(ctx)
-	<-i.listener.Reading
+	<-i.listener.Reading // 阻塞住，直到上一行的ListenBackground真正开始listen。
 	Debug(1, i)
 	go func() {
 		<-errCh // the listener closed voluntarily

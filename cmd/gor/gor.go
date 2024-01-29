@@ -85,7 +85,7 @@ func main() {
 	} else {
 		flag.Parse()
 		goreplay.CheckSettings()
-		plugins = goreplay.NewPlugins()
+		plugins = goreplay.NewPlugins() // 入口
 	}
 
 	log.Printf("[PPID %d and PID %d] Version:%s\n", os.Getppid(), os.Getpid(), goreplay.VERSION)

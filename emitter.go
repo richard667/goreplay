@@ -103,7 +103,7 @@ func CopyMulty(src PluginReader, writers ...PluginWriter) error {
 			if modifier != nil {
 				Debug(3, "[EMITTER] modifier:", requestID, "from:", src)
 				if isRequestPayload(msg.Meta) {
-					msg.Data = modifier.Rewrite(msg.Data)
+					msg.Data = modifier.Rewrite(msg.Data) // 配置了modifier后，只有都匹配上的请求才会modify并后续处理，只要有一个地方不匹配，就会认为是无效数据，返回空。
 					// If modifier tells to skip request
 					if len(msg.Data) == 0 {
 						filteredRequests.Set(requestID, []byte{}, 60) //

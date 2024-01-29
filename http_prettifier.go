@@ -21,6 +21,7 @@ func prettifyHTTP(p []byte) []byte {
 
 	headersPos := proto.MIMEHeadersEndPos(p)
 
+	// header的结束位置
 	if headersPos < 5 || headersPos > len(p) {
 		return p
 	}
@@ -28,6 +29,7 @@ func prettifyHTTP(p []byte) []byte {
 	headers := p[:headersPos]
 	content := p[headersPos:]
 
+	// chunked单独处理，https://imququ.com/post/transfer-encoding-header-in-http.html
 	if tEnc {
 		buf := bytes.NewReader(content)
 		r := httputil.NewChunkedReader(buf)
@@ -39,6 +41,7 @@ func prettifyHTTP(p []byte) []byte {
 		headers = proto.SetHeader(headers, []byte("Content-Length"), []byte(newLen))
 	}
 
+	// gzip单独处理，拿到解压后的内容。https://imququ.com/post/content-encoding-header-in-http.html
 	if cEnc {
 		buf := bytes.NewReader(content)
 		g, err := gzip.NewReader(buf)

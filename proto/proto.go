@@ -343,6 +343,7 @@ const (
 )
 
 // HasResponseTitle reports whether this payload has an HTTP/1 response title
+// ME: 如果格式为HTTP/1.1 200\r\n，则表示Response
 func HasResponseTitle(payload []byte) bool {
 	s := byteutils.SliceToString(payload)
 	if len(s) < MinResponseCount {
@@ -372,6 +373,7 @@ func HasResponseTitle(payload []byte) bool {
 }
 
 // HasRequestTitle reports whether this payload has an HTTP/1 request title
+// ME： 如果有POST / HTTP/1.1\r\n，则表示为Request
 func HasRequestTitle(payload []byte) bool {
 	s := byteutils.SliceToString(payload)
 	if len(s) < MinRequestCount {

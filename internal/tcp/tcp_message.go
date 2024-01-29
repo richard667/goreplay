@@ -98,6 +98,7 @@ func (m *Message) UUID() []byte {
 	return uuidHex
 }
 
+// ME：一个TCP包可能分散在多个IP包中，需要根据Seq将其组装起来。
 func (m *Message) add(packet *Packet) bool {
 	// Skip duplicates
 	for _, p := range m.packets {
@@ -135,6 +136,8 @@ func (m *Message) Packets() []*Packet {
 	return m.packets
 }
 
+// 检查有没有丢IP包，注意Seq含义，统计的是TCP包内数据的长度，不包括包头的长度。
+// If a TCP packet contains 1400 bytes of data, then the sequence number will be increased by 1400 after the packet is transmitted.
 func (m *Message) MissingChunk() bool {
 	nextSeq := m.packets[0].Seq
 
@@ -149,6 +152,7 @@ func (m *Message) MissingChunk() bool {
 	return false
 }
 
+// 每一个TCP包的数据。
 func (m *Message) PacketData() [][]byte {
 	tmp := make([][]byte, len(m.packets))
 
@@ -207,21 +211,22 @@ type HintStart func(*Packet) (IsRequest, IsOutgoing bool)
 // MessageParser holds data of all tcp messages in progress(still receiving/sending packets).
 // message is identified by its source port and dst port, and last 4bytes of src IP.
 type MessageParser struct {
-	m map[uint64]*Message
+	m map[uint64]*Message // ME：组装过程中的TCP数据包
 
-	messageExpire  time.Duration // the maximum time to wait for the final packet, minimum is 100ms
+	messageExpire  time.Duration // the maximum time to wait for the final packet, minimum is 1000ms
 	allowIncompete bool
-	End            HintEnd
-	Start          HintStart
+	End            HintEnd   // 一个TCP数据包接收结束
+	Start          HintStart // 一个TCP数据包接收开始
 	ticker         *time.Ticker
-	messages       chan *Message
-	packets        chan *PcapPacket
-	close          chan struct{} // to signal that we are able to close
-	ports          []uint16
-	ips            []net.IP
+	messages       chan *Message    // ME：多个IP包组装后的一个完整的TCP数据包
+	packets        chan *PcapPacket // ME: 收到的IP数据包
+	close          chan struct{}    // to signal that we are able to close
+	ports          []uint16         // ME：本服务所在监听的端口，若数据包的srcPort在列表中，则数据包为出数据包，如果dstPort在ports列表中，则为入数据包
+	ips            []net.IP         // ME：本服务所在监听的IP，若数据包的srcIP在列表中，则数据包为出数据包，如果dstIP在ports列表中，则为入数据包。 ports和ips需要组合起来判断。
 }
 
 // NewMessageParser returns a new instance of message parser
+// ME：New完之后就开始监听并记录数据了。
 func NewMessageParser(messages chan *Message, ports []uint16, ips []net.IP, messageExpire time.Duration, allowIncompete bool) (parser *MessageParser) {
 	parser = new(MessageParser)
 
@@ -278,6 +283,7 @@ func (parser *MessageParser) wait() {
 	}
 }
 
+// ME： 解析原生IP数据包，得到解析后的IP包。
 func (parser *MessageParser) parsePacket(pcapPkt *PcapPacket) *Packet {
 	pckt, err := ParsePacket(pcapPkt.Data, pcapPkt.LType, pcapPkt.LTypeLen, pcapPkt.Ci, false)
 	if err != nil {
@@ -312,6 +318,7 @@ func containsOrEmpty(element net.IP, ipList []net.IP) bool {
 	return false
 }
 
+// ME：处理解析后的IP包，组装成TCP包。
 func (parser *MessageParser) processPacket(pckt *Packet) {
 	if pckt == nil {
 		return
@@ -321,7 +328,7 @@ func (parser *MessageParser) processPacket(pckt *Packet) {
 	// No matter if it is request or response, all packets in the same message have same
 	m, ok := parser.m[pckt.MessageID()]
 	switch {
-	case ok:
+	case ok: // 如果Message里已经有IP包，则将新收到的IP包加到Message里。
 		if m.Direction == DirUnknown {
 			if in, out := parser.Start(pckt); in || out {
 				if in {
@@ -333,7 +340,7 @@ func (parser *MessageParser) processPacket(pckt *Packet) {
 		}
 		parser.addPacket(m, pckt)
 		return
-	case pckt.Direction == DirUnknown && parser.Start != nil:
+	case pckt.Direction == DirUnknown && parser.Start != nil: // ME：如果收到的包是第一个包，则new一个message处理。
 		if in, out := parser.Start(pckt); in || out {
 			if in {
 				pckt.Direction = DirIncoming
@@ -355,6 +362,7 @@ func (parser *MessageParser) processPacket(pckt *Packet) {
 	parser.addPacket(m, pckt)
 }
 
+// ME：因为TCP包会拆分到多个IP包中传输，收到后需要根据ID将同一个TCP包组合到一起。
 func (parser *MessageParser) addPacket(m *Message, pckt *Packet) bool {
 	if !m.add(pckt) {
 		return false
@@ -364,16 +372,17 @@ func (parser *MessageParser) addPacket(m *Message, pckt *Packet) bool {
 	// For the binary procols wait for message to expire
 	if parser.End != nil {
 		if parser.End(m) {
-			parser.Emit(m)
+			parser.Emit(m) // ME：一个messageID的packet都处理完后，放到messageParser的Message中。
 			return true
 		}
-
+		// 如果message还没结束，HTTP有一个Continue状态，需要处理下message。
 		parser.Fix100Continue(m)
 	}
 
 	return true
 }
 
+// ME: 对于HTTP 100 Continue的包，需要额外处理下，然后将收到的message加入到messageParse的Map中。
 func (parser *MessageParser) Fix100Continue(m *Message) {
 	// Only adjust a message once
 	if state, ok := m.feedback.(*proto.HTTPState); ok && state.Continue100 && !m.continueAdjusted {
@@ -397,11 +406,13 @@ func (parser *MessageParser) Fix100Continue(m *Message) {
 	}
 }
 
+// ME：从messageParser里读取组装好的TCP包。
 func (parser *MessageParser) Read() *Message {
 	m := <-parser.messages
 	return m
 }
 
+// ME：将组装好/正在组装的TCP包发给messageParser
 func (parser *MessageParser) Emit(m *Message) {
 	stats.Add("message_count", 1)
 
@@ -416,6 +427,7 @@ func GetUnexportedField(field reflect.Value) interface{} {
 
 var failMsg int
 
+// ME：检查是否超过了IP包接收时间，超过则丢弃该TCP包或做其他处理。
 func (parser *MessageParser) timer(now time.Time) {
 	packetLen = 0
 
