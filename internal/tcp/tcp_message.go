@@ -98,7 +98,7 @@ func (m *Message) UUID() []byte {
 	return uuidHex
 }
 
-// ME：一个TCP包可能分散在多个IP包中，需要根据Seq将其组装起来。
+// ME：TCP报文到达的先后顺序不一定，根据seq将报文按顺序加入到队列，确保最终报文有序。
 func (m *Message) add(packet *Packet) bool {
 	// Skip duplicates
 	for _, p := range m.packets {
